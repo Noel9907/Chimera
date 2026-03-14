@@ -1,6 +1,8 @@
 import { useState } from "react";
 import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Browser from "./pages/Browser";
 import "./App.css";
 
 function App() {
@@ -13,9 +15,13 @@ function App() {
   }
 
   return (
+    <BrowserRouter> 
+    <Routes>
+      <Route 
+        path="/"
+        element={ 
     <main className="container">
       <h1>Welcome to Tauri + React</h1>
-
       <div className="row">
         <a href="https://vite.dev" target="_blank">
           <img src="/vite.svg" className="logo vite" alt="Vite logo" />
@@ -45,6 +51,14 @@ function App() {
       </form>
       <p>{greetMsg}</p>
     </main>
+     }
+      />
+
+      <Route path="/browser" element={<Browser />} />
+
+    </Routes>
+  </BrowserRouter>
+
   );
 }
 
