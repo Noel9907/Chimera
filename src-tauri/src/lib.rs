@@ -1,4 +1,6 @@
 pub mod content;
+pub mod storage;
+pub mod publisher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
