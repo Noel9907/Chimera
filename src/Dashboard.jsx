@@ -86,13 +86,13 @@ const S = {
     display: "flex",
     height: "100vh",
     fontFamily: "'Syne', 'Segoe UI', sans-serif",
-    background: "#f4f3ef",
+    background: "#ececec",
     overflow: "hidden",
   },
   // sidebar
   sidebar: {
     width: 220,
-    background: "#ffffff",
+    background: "#f5f5f5",
     borderRight: "0.5px solid rgba(0,0,0,0.08)",
     display: "flex",
     flexDirection: "column",
@@ -121,7 +121,7 @@ const S = {
     padding: "9px 10px", borderRadius: 8, cursor: "pointer",
     fontSize: 13, fontWeight: 500,
     color: active ? "#0F6E56" : "#6b6b65",
-    background: active ? "#E1F5EE" : "transparent",
+    background: active ? "#e8e8e8" : "transparent",
     transition: "background .15s, color .15s",
   }),
   sidebarFooter: {
@@ -141,7 +141,7 @@ const S = {
   nodeId: { fontSize: 10, color: "#a0a09a", fontFamily: "monospace" },
   // topbar
   topbar: {
-    background: "#ffffff",
+    background: "#f3f3f3",
     borderBottom: "0.5px solid rgba(0,0,0,0.08)",
     padding: "0 28px", height: 56,
     display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -156,7 +156,7 @@ const S = {
     display: "inline-flex", alignItems: "center", gap: 6,
     padding: "8px 16px", borderRadius: 8,
     fontSize: 13, fontWeight: 600, cursor: "pointer",
-    border: "none", background: "#0F6E56", color: "#fff",
+    border: "none", background: "#3b82f6", color: "#fff",
   },
   btnGhost: {
     fontFamily: "inherit",
@@ -172,7 +172,7 @@ const S = {
   // metric cards
   metricsGrid: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 14 },
   metricCard: {
-    background: "#fff",
+    background: "#f9f9f9",
     border: "0.5px solid rgba(0,0,0,0.08)",
     borderRadius: 12, padding: "16px 18px",
   },
@@ -197,7 +197,7 @@ const S = {
   // two-col
   twoCol: { display: "grid", gridTemplateColumns: "1fr 340px", gap: 16 },
   panel: {
-    background: "#fff",
+    background: "#f9f9f9",
     border: "0.5px solid rgba(0,0,0,0.08)",
     borderRadius: 12, padding: 20,
   },
