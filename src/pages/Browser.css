@@ -1,105 +1,149 @@
-.tabs{
-  display:flex;
-  align-items:center;
-  background:#dee1e6;
-  padding:6px 10px;
+/* Core Layout */
+.browser {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #0a0a0a; /* Dark background for neon effect */
+  color: #ccff00; /* Neon Yellow Text */
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
-.tab{
-  background:white;
-  padding:8px 16px;
-  border-radius:10px 10px 0 0;
-  margin-right:8px;
-  font-size:14px;
-  cursor:pointer;
-  box-shadow:0 1px 2px rgba(0,0,0,0.1);
+/* Tabs Area */
+.tabs {
+  display: flex;
+  align-items: center;
+  background: #1a1a1a;
+  padding: 6px 10px 0px 10px;
 }
 
-.tab.add{
-  background:#f1f3f4;
-  font-weight:bold;
-}
-.browser{
-  height:100vh;
-  display:flex;
-  flex-direction:column;
-  background:#f1f3f4;
-}
-
-.active{
-  background:white;
-}
-
-.toolbar{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  padding:10px 12px;
-  background:white;
-  border-bottom:1px solid #ddd;
-}
-.nav-btn{
-  border:none;
-  background:#f1f3f4;
-  padding:8px 12px;
-  border-radius:8px;
-  cursor:pointer;
-  font-size:16px;
-  transition:0.2s;
+.tab {
+  background: #333;
+  color: #888; /* Dimmed text for inactive tabs */
+  padding: 8px 16px;
+  border-radius: 10px 10px 0 0;
+  margin-right: 5px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.3s;
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.nav-btn:hover{
-  background:#e0e0e0;
-}
-.address-bar{
-  flex:1;
-  padding:10px 18px;
-  border-radius:25px;
-  border:1px solid #dadce0;
-  font-size:14px;
-  outline:none;
+.tab.active {
+  background: #ccff00; /* Full Neon Yellow */
+  color: #000; /* Black text for readability on yellow */
+  font-weight: bold;
+  box-shadow: 0 -2px 10px rgba(204, 255, 0, 0.4);
 }
 
-.address-bar:focus{
-  border:1px solid #4285f4;
-  box-shadow:0 0 4px rgba(66,133,244,0.4);
-}
-.browser-window{
-  flex:1;
-  background:white;
-  overflow:hidden;
-}
-.content{
-  flex:1;
-  background:white;
-  padding:20px;
-}
-.bookmark-bar{
-  display:flex;
-  gap:15px;
-  padding:6px 15px;
-  background:#f1f3f4;
-  border-bottom:1px solid #ddd;
-  font-size:13px;
+.tab.add {
+  background: #222;
+  color: #ccff00;
+  border: 1px dashed #ccff00;
+  font-weight: bold;
+  min-width: 30px;
+  justify-content: center;
 }
 
-.bookmark-bar span{
-  cursor:pointer;
-}
-.home{
-  display:flex;
-  flex-direction:column;
-  align-items:center;
-  justify-content:center;
-  height:100%;
-  font-family:sans-serif;
+/* Toolbar & Address Bar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #111;
+  border-bottom: 2px solid #ccff00; /* Neon Border Line */
 }
 
-.home h1{
-  font-size:36px;
-  margin-bottom:10px;
+.nav-btn {
+  border: 1px solid #ccff00;
+  background: transparent;
+  color: #ccff00;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: 0.2s;
 }
 
-.home p{
-  color:#666;
+.nav-btn:hover {
+  background: #ccff00;
+  color: #000;
+}
+
+.address-bar {
+  flex: 1;
+  padding: 10px 18px;
+  border-radius: 25px;
+  border: 1px solid #444;
+  background: #222;
+  color: #ccff00;
+  font-size: 14px;
+  outline: none;
+}
+
+.address-bar:focus {
+  border: 1px solid #ccff00;
+  box-shadow: 0 0 10px rgba(204, 255, 0, 0.6);
+}
+
+/* Browser Window / Content */
+.browser-window {
+  flex: 1;
+  background: #000;
+  overflow: hidden;
+}
+
+.home {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-shadow: 0 0 10px #ccff00;
+}
+
+.home h1 {
+  font-size: 48px;
+  margin-bottom: 10px;
+  color: #ccff00;
+}
+
+.home p {
+  color: #aaa;
+  letter-spacing: 2px;
+}
+
+/* Close icon styling */
+.close-icon {
+  font-size: 10px;
+  opacity: 0.6;
+}
+.close-icon:hover {
+  opacity: 1;
+  color: #000;
+}
+.bookmark-bar {
+  display: flex;
+  gap: 20px;
+  padding: 8px 15px;
+  background: #111;
+  border-bottom: 1px solid #333;
+  font-size: 12px;
+  color: #ccff00;
+}
+
+.bookmark-bar span {
+  cursor: pointer;
+  transition: 0.2s;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.bookmark-bar span:hover {
+  background: #ccff00;
+  color: #000;
+  box-shadow: 0 0 8px #ccff00;
 }
