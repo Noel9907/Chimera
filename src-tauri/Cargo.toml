@@ -22,4 +22,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+cid = "0.11"
+multihash-codetable = { version = "0.1", features = ["sha2"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
 
