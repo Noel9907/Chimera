@@ -1,50 +1,50 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import Browser from "./pages/Browser";
+import Upload from "./pages/Upload";
+import Dashboard from "./pages/Dashboard";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type Page = "browser" | "publish" | "dashboard";
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+function App() {
+  const [currentPage, setCurrentPage] = useState<Page>("publish");
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="app">
+      {/* Sidebar */}
+      <div className="sidebar">
+        <div className="sidebar-logo">
+          <h2>Chimera</h2>
+        </div>
+        <nav className="sidebar-nav">
+          <button
+            className={`sidebar-btn ${currentPage === "browser" ? "active" : ""}`}
+            onClick={() => setCurrentPage("browser")}
+          >
+            Browser
+          </button>
+          <button
+            className={`sidebar-btn ${currentPage === "publish" ? "active" : ""}`}
+            onClick={() => setCurrentPage("publish")}
+          >
+            Publish
+          </button>
+          <button
+            className={`sidebar-btn ${currentPage === "dashboard" ? "active" : ""}`}
+            onClick={() => setCurrentPage("dashboard")}
+          >
+            Dashboard
+          </button>
+        </nav>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      {/* Main content */}
+      <div className="main-content">
+        {currentPage === "browser" && <Browser />}
+        {currentPage === "publish" && <Upload />}
+        {currentPage === "dashboard" && <Dashboard />}
+      </div>
+    </div>
   );
 }
 

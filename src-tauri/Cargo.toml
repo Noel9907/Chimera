@@ -20,6 +20,56 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+cid = "0.11"
+multihash-codetable = { version = "0.1", features = ["sha2"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+
+# P2P Networking — this is the big one
+# Each feature enables a protocol/transport we need:
+#   tokio     = async runtime integration
+#   tcp       = basic TCP connections
+#   websocket = WebSocket transport (for relay compatibility)
+#   noise     = encryption (all connections encrypted, no cleartext ever)
+#   yamux     = multiplexing (multiple streams over one connection)
+#   kademlia  = DHT for peer/content discovery
+#   identify  = peers exchange info about themselves
+#   ping      = liveness checks ("are you still there?")
+#   relay     = NAT traversal fallback (route through public relay server)
+#   request-response = our custom chunk/DAG transfer protocol
+#   macros    = the #[derive(NetworkBehaviour)] macro
+#   dns       = resolve DNS names in multiaddresses
+#   ed25519   = keypair type for peer identity
+libp2p = { version = "0.54", features = [
+    "tokio",
+    "tcp",
+    "websocket",
+    "noise",
+    "yamux",
+    "kad",
+    "identify",
+    "ping",
+    "relay",
+    "request-response",
+    "macros",
+    "dns",
+    "ed25519",
+    "serde",
+    "cbor",
+] }
+
+# Async runtime — lets Rust do many things at once (listen, send, receive)
+tokio = { version = "1", features = ["full"] }
+
+# Logging — so we can see what the node is doing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+anyhow = "1"
+dirs = "6"
 
