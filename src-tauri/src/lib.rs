@@ -65,6 +65,8 @@ pub fn run() {
             ipc::commands::fetch_file,
             ipc::commands::get_node_id,
             ipc::commands::get_peer_count,
+            ipc::commands::browser_navigate,
+            ipc::commands::browser_hide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

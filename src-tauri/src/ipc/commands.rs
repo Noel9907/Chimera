@@ -9,7 +9,7 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::node::handle::NodeHandle;
 use crate::publisher::pipeline;
@@ -215,4 +215,57 @@ pub async fn get_node_id(handle: State<'_, NodeHandle>) -> Result<String, String
 #[tauri::command]
 pub async fn get_peer_count(handle: State<'_, NodeHandle>) -> Result<u32, String> {
     handle.get_peer_count().await
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Browser webview commands
+// ═══════════════════════════════════════════════════════════════════
+
+/// Navigate the browser child webview to a URL.
+/// Creates the webview on first call, reuses it after.
+/// Frontend sends the exact bounds of the content area so we position it correctly.
+#[tauri::command]
+pub async fn browser_navigate(
+    app: tauri::AppHandle,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    let parsed: url::Url = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
+
+    if let Some(wv) = app.get_webview("browser-child") {
+        // Already exists — navigate and reposition
+        wv.navigate(parsed).map_err(|e: tauri::Error| e.to_string())?;
+        wv.set_position(tauri::LogicalPosition::new(x, y))
+            .map_err(|e: tauri::Error| e.to_string())?;
+        wv.set_size(tauri::LogicalSize::new(width, height))
+            .map_err(|e: tauri::Error| e.to_string())?;
+        wv.show().map_err(|e: tauri::Error| e.to_string())?;
+    } else {
+        let window = app.get_window("main").ok_or("Main window not found")?;
+        let builder = tauri::webview::WebviewBuilder::new(
+            "browser-child",
+            tauri::WebviewUrl::External(parsed),
+        );
+        window
+            .add_child(
+                builder,
+                tauri::LogicalPosition::new(x, y),
+                tauri::LogicalSize::new(width, height),
+            )
+            .map_err(|e: tauri::Error| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Hide the browser child webview (when switching to Publish/Dashboard pages).
+#[tauri::command]
+pub async fn browser_hide(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(wv) = app.get_webview("browser-child") {
+        wv.hide().map_err(|e: tauri::Error| e.to_string())?;
+    }
+    Ok(())
 }
