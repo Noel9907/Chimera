@@ -7,11 +7,16 @@ pub mod node;
 pub mod ipc;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 use tokio::sync::mpsc;
 use node::config::NodeConfig;
 use node::handle::{NodeCommand, NodeHandle};
+
+/// Tracks the current chimera site being browsed so absolute paths
+/// (like /assets/foo.js) can be resolved to the correct site.
+type CurrentSite = Arc<Mutex<String>>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -44,6 +49,8 @@ pub fn run() {
             let config = NodeConfig::default_config();
             std::fs::create_dir_all(&config.data_dir).ok();
 
+            app.manage(CurrentSite::default());
+
             let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
             app.manage(NodeHandle::new(cmd_tx));
 
@@ -75,27 +82,55 @@ pub fn run() {
 /// Serve a file from a chimera site via the custom protocol.
 ///
 /// Path format: /site-name/path/to/file
-/// e.g., /first/index.html or /first/css/style.css
+/// e.g., /sample/index.html or /sample/css/style.css
+///
+/// If the first path segment isn't a known site, we assume it's a resource
+/// (like /assets/foo.js) belonging to the last-browsed site.
 async fn serve_chimera_content(
     app: &tauri::AppHandle,
     path: &str,
 ) -> tauri::http::Response<Vec<u8>> {
     let path = path.trim_start_matches('/');
 
-    // Split into site name and file path
-    let (site_name, file_path) = match path.split_once('/') {
-        Some((name, rest)) => (name, format!("/{}", rest)),
-        None => (path, "/index.html".to_string()),
-    };
-
-    if site_name.is_empty() {
+    if path.is_empty() {
         return error_response(404, "No site name in URL");
     }
 
-    let handle: NodeHandle = app.state::<NodeHandle>().inner().clone();
-    let data_dir = get_data_dir();
+    // Split into first segment and rest
+    let (first_segment, rest) = match path.split_once('/') {
+        Some((s, r)) => (s, r),
+        None => (path, ""),
+    };
 
-    match retriever::pipeline::retrieve_file(site_name, &file_path, &handle, &data_dir).await {
+    // Check if first segment is a known site (check local DB)
+    let data_dir = get_data_dir();
+    let is_known_site = {
+        storage::database::Database::open(&data_dir)
+            .ok()
+            .and_then(|d| d.get_site(first_segment).ok().flatten())
+            .is_some()
+    };
+
+    let (site_name, file_path) = if is_known_site {
+        // Remember this as the current site
+        let current: CurrentSite = app.state::<CurrentSite>().inner().clone();
+        *current.lock().unwrap() = first_segment.to_string();
+
+        let fp = if rest.is_empty() { "/index.html".to_string() } else { format!("/{}", rest) };
+        (first_segment.to_string(), fp)
+    } else {
+        // Not a known site — treat the whole path as a file path under the current site
+        let current: CurrentSite = app.state::<CurrentSite>().inner().clone();
+        let site = current.lock().unwrap().clone();
+        if site.is_empty() {
+            return error_response(404, "No site context for this request");
+        }
+        (site, format!("/{}", path))
+    };
+
+    let handle: NodeHandle = app.state::<NodeHandle>().inner().clone();
+
+    match retriever::pipeline::retrieve_file(&site_name, &file_path, &handle, &data_dir).await {
         Ok(file) => {
             tauri::http::Response::builder()
                 .status(200)
@@ -104,7 +139,7 @@ async fn serve_chimera_content(
                 .unwrap()
         }
         Err(e) => {
-            tracing::warn!("Failed to serve {}/{}: {}", site_name, file_path, e);
+            tracing::warn!("Failed to serve {}{}: {}", site_name, file_path, e);
             error_response(404, &e)
         }
     }
