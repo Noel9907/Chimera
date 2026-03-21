@@ -2,16 +2,17 @@
 .upload-page {
   padding: 30px 40px;
   max-width: 800px;
+  color: #1a1a1a;
 }
 
 .upload-page h1 {
   font-size: 1.8rem;
-  color: #ffffff;
+  color: #1a1a1a;
   margin-bottom: 8px;
 }
 
 .subtitle {
-  color: #8888a8;
+  color: #666;
   font-size: 0.9rem;
   margin-bottom: 30px;
   line-height: 1.5;
@@ -19,8 +20,8 @@
 
 /* ── Form ── */
 .publish-form {
-  background: #16213e;
-  border: 1px solid #0f3460;
+  background: white;
+  border: 1px solid #ddd;
   border-radius: 10px;
   padding: 25px;
   margin-bottom: 20px;
@@ -33,7 +34,7 @@
 .form-group label {
   display: block;
   font-size: 0.85rem;
-  color: #a0a0b8;
+  color: #555;
   margin-bottom: 8px;
   font-weight: 600;
   text-transform: uppercase;
@@ -48,33 +49,33 @@
 .folder-input {
   flex: 1;
   padding: 10px 14px;
-  background: #1a1a2e;
-  border: 1px solid #0f3460;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
   border-radius: 6px;
-  color: #e0e0e0;
+  color: #1a1a1a;
   font-size: 0.9rem;
 }
 
 .name-input {
   width: 100%;
   padding: 10px 14px;
-  background: #1a1a2e;
-  border: 1px solid #0f3460;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
   border-radius: 6px;
-  color: #e0e0e0;
+  color: #1a1a1a;
   font-size: 0.9rem;
 }
 
 .name-input:focus,
 .folder-input:focus {
   outline: none;
-  border-color: #00d2ff;
+  border-color: #888;
 }
 
 .hint {
   display: block;
   font-size: 0.78rem;
-  color: #666688;
+  color: #999;
   margin-top: 5px;
 }
 
@@ -95,40 +96,40 @@
 }
 
 .btn-primary {
-  background: #00d2ff;
-  color: #0a0a1a;
+  background: #1a1a1a;
+  color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #00b8e6;
+  background: #333;
 }
 
 .btn-secondary {
-  background: #0f3460;
-  color: #e0e0e0;
+  background: #e0e0e0;
+  color: #1a1a1a;
 }
 
 .btn-secondary:hover {
-  background: #1a4a7a;
+  background: #d0d0d0;
 }
 
 .btn-danger {
   background: transparent;
-  color: #ff4444;
-  border: 1px solid #ff4444;
+  color: #cc0000;
+  border: 1px solid #cc0000;
   padding: 6px 14px;
   font-size: 0.8rem;
 }
 
 .btn-danger:hover {
-  background: #ff444420;
+  background: #fff0f0;
 }
 
 /* ── Error ── */
 .error-msg {
-  background: #3a1020;
-  border: 1px solid #ff4444;
-  color: #ff6666;
+  background: #fff0f0;
+  border: 1px solid #cc0000;
+  color: #cc0000;
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 20px;
@@ -137,15 +138,15 @@
 
 /* ── Success Card ── */
 .success-card {
-  background: #0a2a1a;
-  border: 1px solid #00cc66;
+  background: #f0fff0;
+  border: 1px solid #00aa44;
   border-radius: 10px;
   padding: 25px;
   margin-bottom: 20px;
 }
 
 .success-card h3 {
-  color: #00cc66;
+  color: #00aa44;
   margin-bottom: 15px;
   font-size: 1.1rem;
 }
@@ -165,14 +166,14 @@
 
 .result-label {
   font-size: 0.75rem;
-  color: #66aa88;
+  color: #888;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .result-value {
   font-size: 0.95rem;
-  color: #e0e0e0;
+  color: #1a1a1a;
 }
 
 .result-value.cid {
@@ -183,13 +184,14 @@
 }
 
 .chimera-url {
-  background: #1a1a2e;
+  background: #f5f5f5;
   padding: 10px 16px;
   border-radius: 6px;
   font-family: monospace;
-  color: #00d2ff;
+  color: #1a1a1a;
   font-size: 0.95rem;
   text-align: center;
+  font-weight: 600;
 }
 
 /* ── Published Sites List ── */
@@ -199,7 +201,7 @@
 
 .published-sites h2 {
   font-size: 1.2rem;
-  color: #ffffff;
+  color: #1a1a1a;
   margin-bottom: 15px;
 }
 
@@ -210,8 +212,8 @@
 }
 
 .site-card {
-  background: #16213e;
-  border: 1px solid #0f3460;
+  background: white;
+  border: 1px solid #ddd;
   border-radius: 8px;
   padding: 15px 20px;
   display: flex;
@@ -227,18 +229,18 @@
 
 .site-name {
   font-size: 1rem;
-  color: #00d2ff;
+  color: #1a1a1a;
   font-weight: 600;
 }
 
 .site-meta {
   font-size: 0.8rem;
-  color: #8888a8;
+  color: #888;
 }
 
 .site-cid {
   font-family: monospace;
   font-size: 0.7rem;
-  color: #666688;
+  color: #aaa;
   word-break: break-all;
 }

@@ -165,10 +165,12 @@ fn load_or_generate_keypair(config: &NodeConfig) -> Result<identity::Keypair, St
     let path = config.keypair_path();
 
     if path.exists() {
-        // Load existing keypair
+        // Load existing keypair (we store the 32-byte secret seed)
         let bytes = fs::read(&path)
             .map_err(|e| format!("Failed to read keypair from {}: {}", path.display(), e))?;
-        let keypair = identity::Keypair::ed25519_from_bytes(bytes)
+        // Handle both old 64-byte files and new 32-byte files
+        let seed: Vec<u8> = if bytes.len() == 64 { bytes[..32].to_vec() } else { bytes };
+        let keypair = identity::Keypair::ed25519_from_bytes(seed)
             .map_err(|e| format!("Invalid keypair file: {}", e))?;
         info!("Loaded existing keypair from {}", path.display());
         Ok(keypair)
@@ -199,10 +201,11 @@ fn save_keypair(keypair: &identity::Keypair, path: &Path) -> Result<(), String> 
         .try_into_ed25519()
         .map_err(|e| format!("Not an Ed25519 keypair: {}", e))?;
 
-    // ed25519 secret key is 64 bytes (32 secret + 32 public)
+    // Save only the 32-byte secret seed (not the full 64-byte keypair).
+    // ed25519_from_bytes() expects 32 bytes when loading.
     let bytes = ed25519_kp.to_bytes();
 
-    fs::write(path, bytes)
+    fs::write(path, &bytes[..32])
         .map_err(|e| format!("Failed to write keypair to {}: {}", path.display(), e))?;
 
     Ok(())
