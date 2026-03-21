@@ -1,149 +1,302 @@
 // ── Event Loop ──
 //
-// The swarm produces events: "a peer connected", "Kademlia found a value",
-// "someone requested a chunk", etc.
+// The heart of the P2P node. Runs forever as a background task.
 //
-// This loop runs forever (as a background task) processing those events.
-// Think of it like an inbox — events come in, we handle each one.
+// It does two things in a loop (via tokio::select!):
+//   1. Process swarm events — "a peer connected", "got a DHT result", etc.
+//   2. Process commands from IPC — "what's my peer ID?", "fetch this chunk", etc.
 //
-// For now, we just log events. As we build retrieval and serving,
-// we'll add actual handlers here.
+// Some operations are async (DHT lookups, chunk requests to peers).
+// When we start one, we store the caller's response channel in `pending`.
+// When the result comes back from the network, we look it up and send the answer.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use libp2p::futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{kad, identify, request_response, Swarm};
+use libp2p::{kad, identify, request_response, PeerId, Swarm};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, debug, warn};
 
 use super::behaviour::{ChimeraBehaviour, ChimeraBehaviourEvent};
+use super::handle::NodeCommand;
+use crate::network::protocol::{
+    self, ChunkRequest, ChunkResponse, DagRequest, DagResponse,
+    DagNodeInfo, DhtSiteRecord,
+};
+use crate::storage::chunk_store::ChunkStore;
+use crate::storage::database::Database;
+
+/// Tracks in-flight async operations so we can match network responses
+/// back to the IPC caller that requested them.
+struct Pending {
+    /// DHT get_record queries: QueryId → caller waiting for the record value
+    dht_lookups: HashMap<kad::QueryId, oneshot::Sender<Result<DhtSiteRecord, String>>>,
+
+    /// DHT put_record queries: QueryId → caller waiting for confirmation
+    dht_puts: HashMap<kad::QueryId, oneshot::Sender<Result<(), String>>>,
+
+    /// Chunk requests sent to peers: RequestId → caller waiting for chunk data
+    chunk_requests: HashMap<request_response::OutboundRequestId, oneshot::Sender<Result<Vec<u8>, String>>>,
+
+    /// DAG node requests sent to peers: RequestId → caller waiting for node info
+    dag_requests: HashMap<request_response::OutboundRequestId, oneshot::Sender<Result<DagNodeInfo, String>>>,
+}
+
+impl Pending {
+    fn new() -> Self {
+        Pending {
+            dht_lookups: HashMap::new(),
+            dht_puts: HashMap::new(),
+            chunk_requests: HashMap::new(),
+            dag_requests: HashMap::new(),
+        }
+    }
+}
 
 /// Run the event loop forever. Call this as a Tokio background task.
 ///
-/// `swarm` is passed by ownership — this function takes over the swarm
-/// and processes events until the program shuts down.
-pub async fn run_event_loop(mut swarm: Swarm<ChimeraBehaviour>) {
+/// `swarm`    — the libp2p network node (takes ownership)
+/// `cmd_rx`   — receives commands from NodeHandle
+/// `data_dir` — path to ~/.chimera/ for storage access
+pub async fn run_event_loop(
+    mut swarm: Swarm<ChimeraBehaviour>,
+    mut cmd_rx: mpsc::Receiver<NodeCommand>,
+    data_dir: PathBuf,
+) {
+    // Open storage so we can serve chunks/DAG nodes to peers.
+    // These are separate from the connections IPC commands open — SQLite handles this fine.
+    let chunk_store = ChunkStore::new(&data_dir).expect("Failed to open chunk store");
+    let db = Database::open(&data_dir).expect("Failed to open database");
+
+    let mut pending = Pending::new();
+
     info!("Event loop started, waiting for events...");
 
     loop {
-        // swarm.select_next_some() waits for the next event.
-        // It's async, so it doesn't block — other tasks can run while we wait.
-        let event = swarm.select_next_some().await;
-
-        match event {
-            // ── Connection events ──
-            SwarmEvent::NewListenAddr { address, .. } => {
-                info!("Listening on: {}", address);
+        tokio::select! {
+            event = swarm.select_next_some() => {
+                handle_swarm_event(&mut swarm, &chunk_store, &db, &mut pending, event);
             }
-
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                info!("Connected to peer: {}", peer_id);
-            }
-
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                info!("Disconnected from peer: {}", peer_id);
-            }
-
-            // ── Behaviour events (from our protocols) ──
-            SwarmEvent::Behaviour(event) => {
-                handle_behaviour_event(&mut swarm, event);
-            }
-
-            // ── Everything else (dialing, listener errors, etc.) ──
-            other => {
-                debug!("Swarm event: {:?}", other);
+            Some(cmd) = cmd_rx.recv() => {
+                handle_command(&mut swarm, &mut pending, cmd);
             }
         }
     }
 }
 
-/// Handle events from our composed behaviour.
-/// Each protocol (Kademlia, Identify, Ping, etc.) produces its own event type.
+// ═══════════════════════════════════════════════════════════════════
+// Command handling — IPC requests come in here
+// ═══════════════════════════════════════════════════════════════════
+
+fn handle_command(
+    swarm: &mut Swarm<ChimeraBehaviour>,
+    pending: &mut Pending,
+    cmd: NodeCommand,
+) {
+    match cmd {
+        NodeCommand::GetNodeId { resp } => {
+            let _ = resp.send(swarm.local_peer_id().to_string());
+        }
+
+        NodeCommand::GetPeerCount { resp } => {
+            let _ = resp.send(swarm.connected_peers().count() as u32);
+        }
+
+        NodeCommand::AnnounceSite {
+            site_name, root_cid, total_size, chunk_count, published_at, resp,
+        } => {
+            let peer_id = swarm.local_peer_id().to_string();
+            let record_value = DhtSiteRecord {
+                root_cid,
+                publisher_peer_id: peer_id,
+                total_size,
+                chunk_count,
+                published_at,
+            };
+
+            let key = kad::RecordKey::new(&format!("/chimera/site/{}", site_name));
+            let value = match serde_json::to_vec(&record_value) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = resp.send(Err(format!("Failed to serialize: {}", e)));
+                    return;
+                }
+            };
+
+            let record = kad::Record { key, value, publisher: None, expires: None };
+            match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
+                Ok(query_id) => {
+                    pending.dht_puts.insert(query_id, resp);
+                }
+                Err(e) => {
+                    let _ = resp.send(Err(format!("DHT put failed: {:?}", e)));
+                }
+            }
+        }
+
+        NodeCommand::ResolveSiteName { site_name, resp } => {
+            let key = kad::RecordKey::new(&format!("/chimera/site/{}", site_name));
+            let query_id = swarm.behaviour_mut().kademlia.get_record(key);
+            pending.dht_lookups.insert(query_id, resp);
+        }
+
+        NodeCommand::FetchChunk { cid, peer_id, resp } => {
+            let pid = match peer_id.parse::<PeerId>() {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = resp.send(Err(format!("Invalid PeerId: {}", e)));
+                    return;
+                }
+            };
+            let request_id = swarm
+                .behaviour_mut()
+                .chunk_proto
+                .send_request(&pid, ChunkRequest { cid });
+            pending.chunk_requests.insert(request_id, resp);
+        }
+
+        NodeCommand::FetchDagNode { cid, peer_id, resp } => {
+            let pid = match peer_id.parse::<PeerId>() {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = resp.send(Err(format!("Invalid PeerId: {}", e)));
+                    return;
+                }
+            };
+            let request_id = swarm
+                .behaviour_mut()
+                .dag_proto
+                .send_request(&pid, DagRequest { cid });
+            pending.dag_requests.insert(request_id, resp);
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Swarm event handling — network events come in here
+// ═══════════════════════════════════════════════════════════════════
+
+fn handle_swarm_event(
+    swarm: &mut Swarm<ChimeraBehaviour>,
+    chunk_store: &ChunkStore,
+    db: &Database,
+    pending: &mut Pending,
+    event: SwarmEvent<ChimeraBehaviourEvent>,
+) {
+    match event {
+        SwarmEvent::NewListenAddr { address, .. } => {
+            info!("Listening on: {}", address);
+        }
+        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            info!("Connected to peer: {}", peer_id);
+        }
+        SwarmEvent::ConnectionClosed { peer_id, .. } => {
+            info!("Disconnected from peer: {}", peer_id);
+        }
+        SwarmEvent::Behaviour(event) => {
+            handle_behaviour_event(swarm, chunk_store, db, pending, event);
+        }
+        other => {
+            debug!("Swarm event: {:?}", other);
+        }
+    }
+}
+
 fn handle_behaviour_event(
     swarm: &mut Swarm<ChimeraBehaviour>,
+    chunk_store: &ChunkStore,
+    db: &Database,
+    pending: &mut Pending,
     event: ChimeraBehaviourEvent,
 ) {
     match event {
-        // ── Kademlia events ──
-        ChimeraBehaviourEvent::Kademlia(kad_event) => {
-            handle_kademlia_event(kad_event);
+        ChimeraBehaviourEvent::Kademlia(e) => {
+            handle_kademlia_event(pending, e);
         }
-
-        // ── Identify events ──
-        ChimeraBehaviourEvent::Identify(identify_event) => {
-            handle_identify_event(swarm, identify_event);
+        ChimeraBehaviourEvent::Identify(e) => {
+            handle_identify_event(swarm, e);
         }
-
-        // ── Ping events ──
-        ChimeraBehaviourEvent::Ping(ping_event) => {
-            debug!(
-                "Ping from {}: {:?}",
-                ping_event.peer,
-                ping_event.result
-            );
+        ChimeraBehaviourEvent::Ping(e) => {
+            debug!("Ping from {}: {:?}", e.peer, e.result);
         }
-
-        // ── Chunk protocol events ──
-        ChimeraBehaviourEvent::ChunkProto(chunk_event) => {
-            handle_chunk_event(chunk_event);
+        ChimeraBehaviourEvent::ChunkProto(e) => {
+            handle_chunk_event(swarm, chunk_store, pending, e);
         }
-
-        // ── DAG protocol events ──
-        ChimeraBehaviourEvent::DagProto(dag_event) => {
-            handle_dag_event(dag_event);
+        ChimeraBehaviourEvent::DagProto(e) => {
+            handle_dag_event(swarm, db, pending, e);
         }
-
-        // ── Relay client events ──
-        ChimeraBehaviourEvent::RelayClient(relay_event) => {
-            debug!("Relay event: {:?}", relay_event);
+        ChimeraBehaviourEvent::RelayClient(e) => {
+            debug!("Relay event: {:?}", e);
         }
     }
 }
 
-/// Handle Kademlia DHT events.
-fn handle_kademlia_event(event: kad::Event) {
+// ── Kademlia ──
+
+fn handle_kademlia_event(pending: &mut Pending, event: kad::Event) {
     match event {
-        kad::Event::OutboundQueryProgressed { result, .. } => {
+        kad::Event::OutboundQueryProgressed { id, result, .. } => {
             match result {
-                kad::QueryResult::Bootstrap(Ok(result)) => {
-                    info!(
-                        "Kademlia bootstrap step: {} remaining peers",
-                        result.num_remaining
-                    );
-                }
-                kad::QueryResult::GetClosestPeers(Ok(result)) => {
-                    info!(
-                        "Found {} closest peers",
-                        result.peers.len()
-                    );
-                }
-                kad::QueryResult::GetRecord(Ok(result)) => {
-                    info!("Got DHT record (GetRecord succeeded)");
-                    // We'll handle actual record data when we build retrieval
-                    let _ = result;
-                }
-                kad::QueryResult::PutRecord(Ok(_)) => {
-                    info!("Successfully stored record in DHT");
-                }
-                kad::QueryResult::GetProviders(Ok(result)) => {
-                    match result {
-                        kad::GetProvidersOk::FoundProviders { providers, .. } => {
-                            info!("Found {} providers", providers.len());
-                        }
-                        kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. } => {
-                            debug!("Provider search finished");
+                // ── DHT get_record results ──
+                kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
+                    kad::PeerRecord { record, .. },
+                ))) => {
+                    // Try to resolve a pending lookup
+                    if let Some(resp) = pending.dht_lookups.remove(&id) {
+                        match serde_json::from_slice::<DhtSiteRecord>(&record.value) {
+                            Ok(site_record) => {
+                                let _ = resp.send(Ok(site_record));
+                            }
+                            Err(e) => {
+                                let _ = resp.send(Err(format!("Bad DHT record: {}", e)));
+                            }
                         }
                     }
                 }
-                kad::QueryResult::StartProviding(Ok(_)) => {
-                    debug!("Now providing content to DHT");
+                kad::QueryResult::GetRecord(Ok(
+                    kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. },
+                )) => {
+                    // Query finished — if we still have a pending sender, it means
+                    // no record was found (FoundRecord never fired).
+                    if let Some(resp) = pending.dht_lookups.remove(&id) {
+                        let _ = resp.send(Err("Site not found in DHT".to_string()));
+                    }
                 }
-                // Log failures but don't crash
+                kad::QueryResult::GetRecord(Err(e)) => {
+                    if let Some(resp) = pending.dht_lookups.remove(&id) {
+                        let _ = resp.send(Err(format!("DHT lookup failed: {:?}", e)));
+                    }
+                }
+
+                // ── DHT put_record results ──
+                kad::QueryResult::PutRecord(Ok(_)) => {
+                    if let Some(resp) = pending.dht_puts.remove(&id) {
+                        let _ = resp.send(Ok(()));
+                    }
+                    info!("Stored record in DHT");
+                }
+                kad::QueryResult::PutRecord(Err(e)) => {
+                    if let Some(resp) = pending.dht_puts.remove(&id) {
+                        let _ = resp.send(Err(format!("DHT put failed: {:?}", e)));
+                    }
+                }
+
+                // ── Other Kademlia results (bootstrap, providers, etc.) ──
+                kad::QueryResult::Bootstrap(Ok(result)) => {
+                    info!("Kademlia bootstrap step: {} remaining", result.num_remaining);
+                }
+                kad::QueryResult::GetClosestPeers(Ok(result)) => {
+                    info!("Found {} closest peers", result.peers.len());
+                }
                 other => {
                     debug!("Kademlia query result: {:?}", other);
                 }
             }
         }
         kad::Event::RoutingUpdated { peer, .. } => {
-            debug!("Kademlia routing table updated: added {}", peer);
+            debug!("Kademlia routing updated: added {}", peer);
         }
         other => {
             debug!("Kademlia event: {:?}", other);
@@ -151,28 +304,15 @@ fn handle_kademlia_event(event: kad::Event) {
     }
 }
 
-/// Handle Identify events.
-/// When a peer identifies itself, we add its addresses to Kademlia
-/// so we can find it again later.
-fn handle_identify_event(
-    swarm: &mut Swarm<ChimeraBehaviour>,
-    event: identify::Event,
-) {
+// ── Identify ──
+
+fn handle_identify_event(swarm: &mut Swarm<ChimeraBehaviour>, event: identify::Event) {
     match event {
         identify::Event::Received { peer_id, info, .. } => {
-            info!(
-                "Identified peer {}: protocols={:?}",
-                peer_id,
-                info.protocols
-            );
-
-            // Add the peer's addresses to our Kademlia routing table.
-            // This is how Kademlia learns about new peers — through Identify.
+            info!("Identified peer {}: protocols={:?}", peer_id, info.protocols);
+            // Add the peer's addresses to Kademlia so we can reach them later
             for addr in info.listen_addrs {
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, addr);
+                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
             }
         }
         identify::Event::Sent { peer_id, .. } => {
@@ -184,41 +324,69 @@ fn handle_identify_event(
     }
 }
 
-/// Handle incoming chunk requests.
-/// For now, just log them. We'll add actual chunk serving when we build retrieval.
+// ── Chunk protocol ──
+// Handles both: (a) serving chunks to peers, (b) receiving responses to our requests
+
 fn handle_chunk_event(
-    event: request_response::Event<
-        crate::network::protocol::ChunkRequest,
-        crate::network::protocol::ChunkResponse,
-    >,
+    swarm: &mut Swarm<ChimeraBehaviour>,
+    chunk_store: &ChunkStore,
+    pending: &mut Pending,
+    event: request_response::Event<ChunkRequest, ChunkResponse>,
 ) {
     match event {
         request_response::Event::Message { peer, message } => {
             match message {
+                // A peer is asking US for a chunk — serve it from local storage
                 request_response::Message::Request { request, channel, .. } => {
                     info!("Peer {} requested chunk: {}", peer, request.cid);
-                    // TODO: look up chunk in store, send response via channel
-                    // For now, respond with "not found"
-                    let response = crate::network::protocol::ChunkResponse {
-                        cid: request.cid,
-                        data: vec![],
-                        found: false,
-                    };
-                    let _ = channel;
-                    // We'll wire this up when we build chunk serving
-                    let _ = response;
-                }
-                request_response::Message::Response { response, .. } => {
-                    if response.found {
-                        info!("Received chunk {} ({} bytes)", response.cid, response.data.len());
+                    let response = if chunk_store.has(&request.cid) {
+                        match chunk_store.load(&request.cid) {
+                            Ok(data) => ChunkResponse {
+                                cid: request.cid,
+                                data,
+                                found: true,
+                            },
+                            Err(_) => ChunkResponse {
+                                cid: request.cid,
+                                data: vec![],
+                                found: false,
+                            },
+                        }
                     } else {
-                        warn!("Peer doesn't have chunk {}", response.cid);
+                        ChunkResponse {
+                            cid: request.cid,
+                            data: vec![],
+                            found: false,
+                        }
+                    };
+
+                    if let Err(e) = swarm
+                        .behaviour_mut()
+                        .chunk_proto
+                        .send_response(channel, response)
+                    {
+                        warn!("Failed to send chunk response: {:?}", e);
+                    }
+                }
+
+                // WE asked a peer for a chunk — route the response to the caller
+                request_response::Message::Response { request_id, response } => {
+                    if let Some(resp) = pending.chunk_requests.remove(&request_id) {
+                        if response.found {
+                            let _ = resp.send(Ok(response.data));
+                        } else {
+                            let _ = resp.send(Err(format!(
+                                "Peer doesn't have chunk {}", response.cid
+                            )));
+                        }
                     }
                 }
             }
         }
-        request_response::Event::OutboundFailure { peer, error, .. } => {
-            warn!("Chunk request to {} failed: {}", peer, error);
+        request_response::Event::OutboundFailure { request_id, error, .. } => {
+            if let Some(resp) = pending.chunk_requests.remove(&request_id) {
+                let _ = resp.send(Err(format!("Chunk request failed: {}", error)));
+            }
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             warn!("Chunk response to {} failed: {}", peer, error);
@@ -227,33 +395,73 @@ fn handle_chunk_event(
     }
 }
 
-/// Handle incoming DAG node requests.
-/// Same pattern as chunk events — log for now, wire up later.
+// ── DAG protocol ──
+// Same pattern: serve local DAG nodes, and route responses for our own requests
+
 fn handle_dag_event(
-    event: request_response::Event<
-        crate::network::protocol::DagRequest,
-        crate::network::protocol::DagResponse,
-    >,
+    swarm: &mut Swarm<ChimeraBehaviour>,
+    db: &Database,
+    pending: &mut Pending,
+    event: request_response::Event<DagRequest, DagResponse>,
 ) {
     match event {
         request_response::Event::Message { peer, message } => {
             match message {
+                // A peer is asking US for a DAG node — look it up in our database
                 request_response::Message::Request { request, channel, .. } => {
                     info!("Peer {} requested DAG node: {}", peer, request.cid);
-                    // TODO: look up DAG node in database, send response
-                    let _ = channel;
+                    let response = match db.get_dag_node(&request.cid) {
+                        Ok(Some(record)) => {
+                            // Convert DB record → network protocol type
+                            let links: Vec<protocol::DagLink> =
+                                serde_json::from_str(&record.links_json).unwrap_or_default();
+                            DagResponse {
+                                cid: request.cid,
+                                node: Some(DagNodeInfo {
+                                    cid: record.cid,
+                                    name: record.name,
+                                    node_type: record.node_type,
+                                    size: record.size as u64,
+                                    links,
+                                }),
+                            }
+                        }
+                        _ => DagResponse {
+                            cid: request.cid,
+                            node: None,
+                        },
+                    };
+
+                    if let Err(e) = swarm
+                        .behaviour_mut()
+                        .dag_proto
+                        .send_response(channel, response)
+                    {
+                        warn!("Failed to send DAG response: {:?}", e);
+                    }
                 }
-                request_response::Message::Response { response, .. } => {
-                    if response.node.is_some() {
-                        info!("Received DAG node {}", response.cid);
-                    } else {
-                        warn!("Peer doesn't have DAG node {}", response.cid);
+
+                // WE asked a peer for a DAG node — route the response to the caller
+                request_response::Message::Response { request_id, response } => {
+                    if let Some(resp) = pending.dag_requests.remove(&request_id) {
+                        match response.node {
+                            Some(node) => {
+                                let _ = resp.send(Ok(node));
+                            }
+                            None => {
+                                let _ = resp.send(Err(format!(
+                                    "Peer doesn't have DAG node {}", response.cid
+                                )));
+                            }
+                        }
                     }
                 }
             }
         }
-        request_response::Event::OutboundFailure { peer, error, .. } => {
-            warn!("DAG request to {} failed: {}", peer, error);
+        request_response::Event::OutboundFailure { request_id, error, .. } => {
+            if let Some(resp) = pending.dag_requests.remove(&request_id) {
+                let _ = resp.send(Err(format!("DAG request failed: {}", error)));
+            }
         }
         request_response::Event::InboundFailure { peer, error, .. } => {
             warn!("DAG response to {} failed: {}", peer, error);
