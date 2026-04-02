@@ -44,8 +44,11 @@ pub async fn retrieve_file(
         file_path.trim_start_matches('/')
     };
 
+    tracing::info!("Retrieving chimera://{}/{}", site_name, path);
+
     // ── Step 1: Resolve site name to root CID ──
     let (root_cid, publisher_peer_id) = resolve_site(site_name, handle, data_dir).await?;
+    tracing::info!("Resolved '{}': root_cid={}, publisher={}", site_name, root_cid, publisher_peer_id);
 
     // ── Step 2: Fetch root DAG node (the site's top-level directory) ──
     let root_node = fetch_dag_node(&root_cid, &publisher_peer_id, handle, data_dir).await?;

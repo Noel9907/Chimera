@@ -52,13 +52,26 @@ pub fn run() {
             app.manage(CurrentSite::default());
 
             let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
-            app.manage(NodeHandle::new(cmd_tx));
+            let handle = NodeHandle::new(cmd_tx);
+            app.manage(handle.clone());
+
+            let data_dir_for_reannounce = config.data_dir.clone();
+            let handle_for_reannounce = handle.clone();
 
             tauri::async_runtime::spawn(async move {
                 match start_node(config, cmd_rx).await {
                     Ok(()) => {}
                     Err(e) => tracing::error!("Node failed to start: {}", e),
                 }
+            });
+
+            // Re-announce all locally published sites after the node has time to bootstrap.
+            // DHT records live in memory on the relay — they're lost when the relay restarts
+            // or when we disconnect. This ensures our sites are always findable.
+            tauri::async_runtime::spawn(async move {
+                // Wait for connection + Kademlia bootstrap to finish
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                reannounce_local_sites(&handle_for_reannounce, &data_dir_for_reannounce).await;
             });
 
             tracing::info!("Chimera node starting...");
@@ -161,6 +174,45 @@ fn get_data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".chimera")
+}
+
+/// Re-announce all locally published sites to the DHT.
+/// Called on startup after bootstrap so the relay always has our site records.
+async fn reannounce_local_sites(handle: &NodeHandle, data_dir: &std::path::Path) {
+    let db = match storage::database::Database::open(data_dir) {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::warn!("Failed to open DB for re-announce: {}", e);
+            return;
+        }
+    };
+
+    let sites = match db.get_local_sites() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to get local sites: {}", e);
+            return;
+        }
+    };
+
+    if sites.is_empty() {
+        tracing::info!("No local sites to re-announce");
+        return;
+    }
+
+    for site in &sites {
+        tracing::info!("Re-announcing site '{}' to DHT (root_cid={})", site.name, site.root_cid);
+        match handle.announce_site(
+            site.name.clone(),
+            site.root_cid.clone(),
+            site.total_size as u64,
+            site.chunk_count as u32,
+            site.published_at.clone(),
+        ).await {
+            Ok(()) => tracing::info!("Successfully re-announced '{}'", site.name),
+            Err(e) => tracing::warn!("Failed to re-announce '{}': {}", site.name, e),
+        }
+    }
 }
 
 async fn start_node(
