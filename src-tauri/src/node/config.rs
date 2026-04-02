@@ -31,7 +31,10 @@ impl NodeConfig {
 
         NodeConfig {
             data_dir,
-            bootstrap_nodes: Vec::new(),
+            bootstrap_nodes: vec![
+                // EC2 relay server (bootstrap + circuit relay)
+                "/ip4/44.192.53.77/tcp/4001/p2p/12D3KooWJkrcsL6Dt8fDTKiRLJFU8V143Wd9mR1PMSQw2NjgCZrJ".to_string(),
+            ],
             tcp_port: 0, // random port
         }
     }
