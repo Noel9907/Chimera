@@ -25,9 +25,15 @@ impl NodeConfig {
     pub fn default_config() -> Self {
         // dirs::home_dir() gives us the user's home folder
         // e.g., C:\Users\noel on Windows, /home/noel on Linux
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".chimera");
+        // CHIMERA_DATA_DIR env var overrides the default.
+        // Useful for running a second instance: CHIMERA_DATA_DIR=~/.chimera2
+        let data_dir = std::env::var("CHIMERA_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".chimera")
+            });
 
         NodeConfig {
             data_dir,

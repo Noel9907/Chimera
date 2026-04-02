@@ -87,7 +87,9 @@ async fn resolve_site(
     }
 
     // Not cached — ask the DHT
+    tracing::info!("resolve_site: '{}' not in local cache, querying DHT...", site_name);
     let record = handle.resolve_site_name(site_name).await?;
+    tracing::info!("resolve_site: DHT returned root_cid={}, publisher={}", record.root_cid, record.publisher_peer_id);
 
     // Cache the result so we don't hit the DHT next time
     {
@@ -130,7 +132,9 @@ async fn fetch_dag_node(
     }
 
     // Fetch from the publisher peer
+    tracing::info!("fetch_dag_node: fetching {} from peer {}", cid, publisher_peer_id);
     let node = handle.fetch_dag_node(cid, publisher_peer_id).await?;
+    tracing::info!("fetch_dag_node: got node '{}' (type={}, {} links)", node.name, node.node_type, node.links.len());
 
     // Cache it locally
     {
@@ -189,7 +193,9 @@ async fn fetch_file_chunks(
             chunk_store.load(&link.cid)?
         } else {
             // Fetch from peer
+            tracing::info!("fetch_chunk: fetching {} from peer {}", link.cid, publisher_peer_id);
             let data = handle.fetch_chunk(&link.cid, publisher_peer_id).await?;
+            tracing::info!("fetch_chunk: got {} bytes", data.len());
             // Store locally — this is how "browsing = seeding" works
             let _ = chunk_store.save(&link.cid, &data);
             data

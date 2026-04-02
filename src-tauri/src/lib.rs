@@ -115,30 +115,32 @@ async fn serve_chimera_content(
         None => (path, ""),
     };
 
-    // Check if first segment is a known site (check local DB)
     let data_dir = get_data_dir();
-    let is_known_site = {
-        storage::database::Database::open(&data_dir)
-            .ok()
-            .and_then(|d| d.get_site(first_segment).ok().flatten())
-            .is_some()
-    };
 
-    let (site_name, file_path) = if is_known_site {
-        // Remember this as the current site
-        let current: CurrentSite = app.state::<CurrentSite>().inner().clone();
-        *current.lock().unwrap() = first_segment.to_string();
-
+    // Try the first segment as a site name. It might be in our local DB (cached/published)
+    // or it might be a new site we need to resolve from the DHT — the retriever handles both.
+    // Only fall back to "current site" context if the retriever can't find it either.
+    let (site_name, file_path) = {
         let fp = if rest.is_empty() { "/index.html".to_string() } else { format!("/{}", rest) };
-        (first_segment.to_string(), fp)
-    } else {
-        // Not a known site — treat the whole path as a file path under the current site
-        let current: CurrentSite = app.state::<CurrentSite>().inner().clone();
-        let site = current.lock().unwrap().clone();
-        if site.is_empty() {
-            return error_response(404, "No site context for this request");
+
+        // Quick check: is it a plausible site name? (lowercase, hyphens, 3+ chars)
+        let looks_like_site = first_segment.len() >= 3
+            && first_segment.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+
+        if looks_like_site {
+            // Remember as current site so relative paths (like /assets/foo.js) resolve correctly
+            let current: CurrentSite = app.state::<CurrentSite>().inner().clone();
+            *current.lock().unwrap() = first_segment.to_string();
+            (first_segment.to_string(), fp)
+        } else {
+            // Not a site name — treat as a file path under the current site
+            let current: CurrentSite = app.state::<CurrentSite>().inner().clone();
+            let site = current.lock().unwrap().clone();
+            if site.is_empty() {
+                return error_response(404, "No site context for this request");
+            }
+            (site, format!("/{}", path))
         }
-        (site, format!("/{}", path))
     };
 
     let handle: NodeHandle = app.state::<NodeHandle>().inner().clone();
@@ -171,9 +173,13 @@ fn error_response(status: u16, msg: &str) -> tauri::http::Response<Vec<u8>> {
 }
 
 fn get_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".chimera")
+    std::env::var("CHIMERA_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".chimera")
+        })
 }
 
 /// Re-announce all locally published sites to the DHT.

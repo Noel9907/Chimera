@@ -19,9 +19,13 @@ use crate::storage::database::Database;
 /// Get the data directory (~/.chimera/).
 /// Used by all commands that need to access storage.
 fn get_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".chimera")
+    std::env::var("CHIMERA_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".chimera")
+        })
 }
 
 // ── Return types ──

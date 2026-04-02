@@ -290,7 +290,7 @@ fn handle_behaviour_event(
             handle_dag_event(swarm, db, pending, e);
         }
         ChimeraBehaviourEvent::RelayClient(e) => {
-            debug!("Relay event: {:?}", e);
+            info!("Relay client event: {:?}", e);
         }
     }
 }
@@ -305,13 +305,17 @@ fn handle_kademlia_event(pending: &mut Pending, event: kad::Event) {
                 kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(
                     kad::PeerRecord { record, .. },
                 ))) => {
-                    // Try to resolve a pending lookup
+                    info!("DHT GET: found record for key {:?} ({} bytes)",
+                        String::from_utf8_lossy(record.key.as_ref()), record.value.len());
                     if let Some(resp) = pending.dht_lookups.remove(&id) {
                         match serde_json::from_slice::<DhtSiteRecord>(&record.value) {
                             Ok(site_record) => {
+                                info!("DHT GET: resolved site → root_cid={}, publisher={}",
+                                    site_record.root_cid, site_record.publisher_peer_id);
                                 let _ = resp.send(Ok(site_record));
                             }
                             Err(e) => {
+                                warn!("DHT GET: bad record format: {}", e);
                                 let _ = resp.send(Err(format!("Bad DHT record: {}", e)));
                             }
                         }
@@ -320,14 +324,14 @@ fn handle_kademlia_event(pending: &mut Pending, event: kad::Event) {
                 kad::QueryResult::GetRecord(Ok(
                     kad::GetRecordOk::FinishedWithNoAdditionalRecord { .. },
                 )) => {
-                    // Query finished — if we still have a pending sender, it means
-                    // no record was found (FoundRecord never fired).
                     if let Some(resp) = pending.dht_lookups.remove(&id) {
+                        warn!("DHT GET: site not found (no record in DHT)");
                         let _ = resp.send(Err("Site not found in DHT".to_string()));
                     }
                 }
                 kad::QueryResult::GetRecord(Err(e)) => {
                     if let Some(resp) = pending.dht_lookups.remove(&id) {
+                        warn!("DHT GET failed: {:?}", e);
                         let _ = resp.send(Err(format!("DHT lookup failed: {:?}", e)));
                     }
                 }
@@ -337,9 +341,10 @@ fn handle_kademlia_event(pending: &mut Pending, event: kad::Event) {
                     if let Some(resp) = pending.dht_puts.remove(&id) {
                         let _ = resp.send(Ok(()));
                     }
-                    info!("Stored record in DHT");
+                    info!("DHT PUT: successfully stored record");
                 }
                 kad::QueryResult::PutRecord(Err(e)) => {
+                    warn!("DHT PUT failed: {:?}", e);
                     if let Some(resp) = pending.dht_puts.remove(&id) {
                         let _ = resp.send(Err(format!("DHT put failed: {:?}", e)));
                     }
@@ -358,7 +363,10 @@ fn handle_kademlia_event(pending: &mut Pending, event: kad::Event) {
             }
         }
         kad::Event::RoutingUpdated { peer, .. } => {
-            debug!("Kademlia routing updated: added {}", peer);
+            info!("Kademlia routing updated: added {}", peer);
+        }
+        kad::Event::InboundRequest { request } => {
+            info!("Kademlia inbound request: {:?}", request);
         }
         other => {
             debug!("Kademlia event: {:?}", other);
@@ -372,9 +380,10 @@ fn handle_identify_event(swarm: &mut Swarm<ChimeraBehaviour>, event: identify::E
     match event {
         identify::Event::Received { peer_id, info, .. } => {
             info!("Identified peer {}: protocols={:?}", peer_id, info.protocols);
+            info!("  listen_addrs: {:?}", info.listen_addrs);
             // Add the peer's addresses to Kademlia so we can reach them later
-            for addr in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+            for addr in &info.listen_addrs {
+                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
             }
         }
         identify::Event::Sent { peer_id, .. } => {
