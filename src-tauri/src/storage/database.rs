@@ -253,6 +253,15 @@ impl Database {
         Ok(sites)
     }
 
+    /// Update the publisher_peer_id for a site (replaces "local" placeholder with real PeerId).
+    pub fn update_site_peer_id(&self, name: &str, peer_id: &str) -> Result<(), String> {
+        self.conn.execute(
+            "UPDATE sites SET publisher_peer_id = ?1 WHERE name = ?2",
+            params![peer_id, name],
+        ).map_err(|e| format!("Failed to update site peer_id: {}", e))?;
+        Ok(())
+    }
+
     /// Delete a site by name.
     pub fn delete_site(&self, name: &str) -> Result<(), String> {
         self.conn.execute(

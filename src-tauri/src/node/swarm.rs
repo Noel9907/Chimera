@@ -92,6 +92,19 @@ pub fn start_listening(
                 if let Err(e) = swarm.dial(addr.clone()) {
                     tracing::warn!("Failed to dial {}: {}", addr, e);
                 }
+
+                // Listen through this node as a relay so peers behind NAT can reach us.
+                // This makes a "relay reservation" — the relay server will forward
+                // incoming connections to us. Without this, other peers can find our
+                // PeerId in the DHT but can't actually connect to send us requests.
+                let relay_addr: Multiaddr = format!("{}/p2p-circuit", addr)
+                    .parse()
+                    .expect("Valid relay circuit address");
+                if let Err(e) = swarm.listen_on(relay_addr.clone()) {
+                    tracing::warn!("Failed to listen on relay circuit {}: {}", relay_addr, e);
+                } else {
+                    info!("Listening via relay circuit: {}", relay_addr);
+                }
             }
             Err(e) => {
                 tracing::warn!("Invalid bootstrap address '{}': {}", addr_str, e);

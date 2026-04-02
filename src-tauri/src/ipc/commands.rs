@@ -76,6 +76,12 @@ pub async fn publish_site(
     // Store files locally (chunk, build DAG, save to disk + SQLite)
     let result = pipeline::publish_site(&folder_path, &site_name, &data_dir)?;
 
+    // Update the site record with our real PeerId (pipeline stores "local" as placeholder)
+    if let Ok(peer_id) = handle.get_node_id().await {
+        let db = Database::open(&data_dir).map_err(|e| format!("DB error: {}", e))?;
+        let _ = db.update_site_peer_id(&site_name, &peer_id);
+    }
+
     // Announce to the DHT so other peers can find this site.
     // Best-effort: if there are no peers yet, this fails silently.
     // The site is still published locally and browseable on this machine.
