@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use libp2p::futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{kad, identify, request_response, PeerId, Swarm};
+use libp2p::{kad, identify, request_response, Multiaddr, PeerId, Swarm};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, debug, warn};
 
@@ -57,30 +57,38 @@ impl Pending {
 
 /// Run the event loop forever. Call this as a Tokio background task.
 ///
-/// `swarm`    — the libp2p network node (takes ownership)
-/// `cmd_rx`   — receives commands from NodeHandle
-/// `data_dir` — path to ~/.chimera/ for storage access
+/// `swarm`           — the libp2p network node (takes ownership)
+/// `cmd_rx`          — receives commands from NodeHandle
+/// `data_dir`        — path to ~/.chimera/ for storage access
+/// `bootstrap_nodes` — relay addresses, used to dial peers via relay circuit
 pub async fn run_event_loop(
     mut swarm: Swarm<ChimeraBehaviour>,
     mut cmd_rx: mpsc::Receiver<NodeCommand>,
     data_dir: PathBuf,
+    bootstrap_nodes: Vec<String>,
 ) {
+    // Parse relay addresses once upfront so we can use them to dial peers via relay circuit.
+    let relay_addrs: Vec<Multiaddr> = bootstrap_nodes
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
     // Open storage so we can serve chunks/DAG nodes to peers.
-    // These are separate from the connections IPC commands open — SQLite handles this fine.
     let chunk_store = ChunkStore::new(&data_dir).expect("Failed to open chunk store");
     let db = Database::open(&data_dir).expect("Failed to open database");
 
     let mut pending = Pending::new();
+    let mut bootstrapped = false;
 
     info!("Event loop started, waiting for events...");
 
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
-                handle_swarm_event(&mut swarm, &chunk_store, &db, &mut pending, event);
+                handle_swarm_event(&mut swarm, &chunk_store, &db, &mut pending, &relay_addrs, &mut bootstrapped, event);
             }
             Some(cmd) = cmd_rx.recv() => {
-                handle_command(&mut swarm, &mut pending, cmd);
+                handle_command(&mut swarm, &mut pending, &relay_addrs, cmd);
             }
         }
     }
@@ -93,6 +101,7 @@ pub async fn run_event_loop(
 fn handle_command(
     swarm: &mut Swarm<ChimeraBehaviour>,
     pending: &mut Pending,
+    relay_addrs: &[Multiaddr],
     cmd: NodeCommand,
 ) {
     match cmd {
@@ -150,6 +159,10 @@ fn handle_command(
                     return;
                 }
             };
+            // If we're not connected to this peer, dial them through the relay.
+            // Both peers are behind NAT — they can't reach each other directly.
+            // The relay forwards traffic between them.
+            ensure_connected(swarm, &pid, relay_addrs);
             let request_id = swarm
                 .behaviour_mut()
                 .chunk_proto
@@ -165,11 +178,39 @@ fn handle_command(
                     return;
                 }
             };
+            ensure_connected(swarm, &pid, relay_addrs);
             let request_id = swarm
                 .behaviour_mut()
                 .dag_proto
                 .send_request(&pid, DagRequest { cid });
             pending.dag_requests.insert(request_id, resp);
+        }
+    }
+}
+
+/// If we're not connected to a peer, add relay circuit addresses so libp2p
+/// can reach them through the relay. Both peers are behind NAT, so direct
+/// connections won't work — traffic must go through the relay.
+fn ensure_connected(
+    swarm: &mut Swarm<ChimeraBehaviour>,
+    peer_id: &PeerId,
+    relay_addrs: &[Multiaddr],
+) {
+    if swarm.is_connected(peer_id) {
+        return;
+    }
+
+    // Build relay circuit address: <relay_addr>/p2p-circuit/p2p/<target_peer_id>
+    // This tells libp2p: "to reach this peer, go through the relay"
+    for relay_addr in relay_addrs {
+        let circuit_addr: Multiaddr = relay_addr
+            .clone()
+            .with(libp2p::multiaddr::Protocol::P2pCircuit)
+            .with(libp2p::multiaddr::Protocol::P2p(*peer_id));
+
+        info!("Dialing peer {} via relay circuit: {}", peer_id, circuit_addr);
+        if let Err(e) = swarm.dial(circuit_addr) {
+            warn!("Failed to dial via relay: {}", e);
         }
     }
 }
@@ -183,6 +224,8 @@ fn handle_swarm_event(
     chunk_store: &ChunkStore,
     db: &Database,
     pending: &mut Pending,
+    relay_addrs: &[Multiaddr],
+    bootstrapped: &mut bool,
     event: SwarmEvent<ChimeraBehaviourEvent>,
 ) {
     match event {
@@ -191,9 +234,28 @@ fn handle_swarm_event(
         }
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             info!("Connected to peer: {}", peer_id);
+            // Re-trigger Kademlia bootstrap after connecting to the relay.
+            // The initial bootstrap() call races with the connection — it fires
+            // before the relay is connected, so it fails with "No known peers".
+            // This ensures bootstrap actually runs once we have a peer.
+            if !*bootstrapped {
+                if let Ok(_) = swarm.behaviour_mut().kademlia.bootstrap() {
+                    info!("Kademlia bootstrap triggered after connecting to {}", peer_id);
+                    *bootstrapped = true;
+                }
+            }
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             info!("Disconnected from peer: {}", peer_id);
+            // If we lost the relay connection, allow re-bootstrapping on next connect
+            let is_relay = relay_addrs.iter().any(|addr| {
+                addr.iter().any(|proto| {
+                    matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
+                })
+            });
+            if is_relay {
+                *bootstrapped = false;
+            }
         }
         SwarmEvent::Behaviour(event) => {
             handle_behaviour_event(swarm, chunk_store, db, pending, event);

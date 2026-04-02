@@ -58,8 +58,10 @@ pub fn create_swarm(config: &NodeConfig) -> Result<Swarm<ChimeraBehaviour>, Stri
         })
         .map_err(|e| format!("Behaviour setup failed: {}", e))?
         .with_swarm_config(|cfg| {
-            // How long before we consider a connection "idle" and close it
-            cfg.with_idle_connection_timeout(Duration::from_secs(60))
+            // Keep connections alive for a long time. The relay connection is critical —
+            // if it drops, we're unreachable by other peers behind NAT.
+            // 10 minutes gives plenty of time for peers to discover each other.
+            cfg.with_idle_connection_timeout(Duration::from_secs(600))
         })
         .build();
 

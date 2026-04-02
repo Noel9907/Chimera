@@ -173,6 +173,7 @@ async fn start_node(
     tracing::info!("Chimera node started");
 
     let data_dir = config.data_dir;
-    node::event_loop::run_event_loop(swarm, cmd_rx, data_dir).await;
+    let bootstrap_nodes = config.bootstrap_nodes;
+    node::event_loop::run_event_loop(swarm, cmd_rx, data_dir, bootstrap_nodes).await;
     Ok(())
 }
