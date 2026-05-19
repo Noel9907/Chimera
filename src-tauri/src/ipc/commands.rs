@@ -231,49 +231,51 @@ pub async fn get_peer_count(handle: State<'_, NodeHandle>) -> Result<u32, String
 // Browser webview commands
 // ═══════════════════════════════════════════════════════════════════
 
-/// Navigate the browser child webview to a URL.
-/// Creates the webview on first call, reuses it after.
-/// Frontend sends the exact bounds of the content area so we position it correctly.
+/// Navigate the browser child webview to a URL (desktop only).
+/// On mobile, this is a no-op — chimera:// sites render inline.
 #[tauri::command]
 pub async fn browser_navigate(
-    app: tauri::AppHandle,
-    url: String,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+    #[allow(unused)] app: tauri::AppHandle,
+    #[allow(unused)] url: String,
+    #[allow(unused)] x: f64,
+    #[allow(unused)] y: f64,
+    #[allow(unused)] width: f64,
+    #[allow(unused)] height: f64,
 ) -> Result<(), String> {
-    let parsed: url::Url = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
+    #[cfg(desktop)]
+    {
+        let parsed: url::Url = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
 
-    if let Some(wv) = app.get_webview("browser-child") {
-        // Already exists — navigate and reposition
-        wv.navigate(parsed).map_err(|e: tauri::Error| e.to_string())?;
-        wv.set_position(tauri::LogicalPosition::new(x, y))
-            .map_err(|e: tauri::Error| e.to_string())?;
-        wv.set_size(tauri::LogicalSize::new(width, height))
-            .map_err(|e: tauri::Error| e.to_string())?;
-        wv.show().map_err(|e: tauri::Error| e.to_string())?;
-    } else {
-        let window = app.get_window("main").ok_or("Main window not found")?;
-        let builder = tauri::webview::WebviewBuilder::new(
-            "browser-child",
-            tauri::WebviewUrl::External(parsed),
-        );
-        window
-            .add_child(
-                builder,
-                tauri::LogicalPosition::new(x, y),
-                tauri::LogicalSize::new(width, height),
-            )
-            .map_err(|e: tauri::Error| e.to_string())?;
+        if let Some(wv) = app.get_webview("browser-child") {
+            wv.navigate(parsed).map_err(|e: tauri::Error| e.to_string())?;
+            wv.set_position(tauri::LogicalPosition::new(x, y))
+                .map_err(|e: tauri::Error| e.to_string())?;
+            wv.set_size(tauri::LogicalSize::new(width, height))
+                .map_err(|e: tauri::Error| e.to_string())?;
+            wv.show().map_err(|e: tauri::Error| e.to_string())?;
+        } else {
+            let window = app.get_window("main").ok_or("Main window not found")?;
+            let builder = tauri::webview::WebviewBuilder::new(
+                "browser-child",
+                tauri::WebviewUrl::External(parsed),
+            );
+            window
+                .add_child(
+                    builder,
+                    tauri::LogicalPosition::new(x, y),
+                    tauri::LogicalSize::new(width, height),
+                )
+                .map_err(|e: tauri::Error| e.to_string())?;
+        }
     }
 
     Ok(())
 }
 
-/// Hide the browser child webview (when switching to Publish/Dashboard pages).
+/// Hide the browser child webview (desktop only, no-op on mobile).
 #[tauri::command]
-pub async fn browser_hide(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn browser_hide(#[allow(unused)] app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
     if let Some(wv) = app.get_webview("browser-child") {
         wv.hide().map_err(|e: tauri::Error| e.to_string())?;
     }

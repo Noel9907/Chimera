@@ -10,7 +10,7 @@
 // When we start one, we store the caller's response channel in `pending`.
 // When the result comes back from the network, we look it up and send the answer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use libp2p::futures::StreamExt;
@@ -80,12 +80,16 @@ pub async fn run_event_loop(
     let mut pending = Pending::new();
     let mut bootstrapped = false;
 
+    // Tracks which relay peers we've already asked for a reservation. We only
+    // listen_on(relay/p2p-circuit) once per relay per session (until disconnect).
+    let mut relay_reservations: HashSet<PeerId> = HashSet::new();
+
     info!("Event loop started, waiting for events...");
 
     loop {
         tokio::select! {
             event = swarm.select_next_some() => {
-                handle_swarm_event(&mut swarm, &chunk_store, &db, &mut pending, &relay_addrs, &mut bootstrapped, event);
+                handle_swarm_event(&mut swarm, &chunk_store, &db, &mut pending, &relay_addrs, &mut bootstrapped, &mut relay_reservations, event);
             }
             Some(cmd) = cmd_rx.recv() => {
                 handle_command(&mut swarm, &mut pending, &relay_addrs, cmd);
@@ -191,25 +195,41 @@ fn handle_command(
 /// If we're not connected to a peer, add relay circuit addresses so libp2p
 /// can reach them through the relay. Both peers are behind NAT, so direct
 /// connections won't work — traffic must go through the relay.
+///
+/// We ALWAYS register the circuit address with Kademlia, even if already
+/// connected. That's what request_response queries via
+/// handle_pending_outbound_connection to find a peer's address. Without this,
+/// send_request fails immediately with DialFailure because no behaviour
+/// returns any address for the peer — even though we just called swarm.dial().
 fn ensure_connected(
     swarm: &mut Swarm<ChimeraBehaviour>,
     peer_id: &PeerId,
     relay_addrs: &[Multiaddr],
 ) {
+    // Build relay circuit addresses and register them with Kademlia.
+    // Format: <relay_addr>/p2p-circuit/p2p/<target_peer_id>
+    // This tells libp2p: "to reach this peer, go through the relay"
+    let circuit_addrs: Vec<Multiaddr> = relay_addrs
+        .iter()
+        .map(|relay_addr| {
+            relay_addr
+                .clone()
+                .with(libp2p::multiaddr::Protocol::P2pCircuit)
+                .with(libp2p::multiaddr::Protocol::P2p(*peer_id))
+        })
+        .collect();
+
+    for addr in &circuit_addrs {
+        swarm.behaviour_mut().kademlia.add_address(peer_id, addr.clone());
+    }
+
     if swarm.is_connected(peer_id) {
         return;
     }
 
-    // Build relay circuit address: <relay_addr>/p2p-circuit/p2p/<target_peer_id>
-    // This tells libp2p: "to reach this peer, go through the relay"
-    for relay_addr in relay_addrs {
-        let circuit_addr: Multiaddr = relay_addr
-            .clone()
-            .with(libp2p::multiaddr::Protocol::P2pCircuit)
-            .with(libp2p::multiaddr::Protocol::P2p(*peer_id));
-
-        info!("Dialing peer {} via relay circuit: {}", peer_id, circuit_addr);
-        if let Err(e) = swarm.dial(circuit_addr) {
+    for addr in circuit_addrs {
+        info!("Dialing peer {} via relay circuit: {}", peer_id, addr);
+        if let Err(e) = swarm.dial(addr) {
             warn!("Failed to dial via relay: {}", e);
         }
     }
@@ -226,6 +246,7 @@ fn handle_swarm_event(
     pending: &mut Pending,
     relay_addrs: &[Multiaddr],
     bootstrapped: &mut bool,
+    relay_reservations: &mut HashSet<PeerId>,
     event: SwarmEvent<ChimeraBehaviourEvent>,
 ) {
     match event {
@@ -247,7 +268,8 @@ fn handle_swarm_event(
         }
         SwarmEvent::ConnectionClosed { peer_id, .. } => {
             info!("Disconnected from peer: {}", peer_id);
-            // If we lost the relay connection, allow re-bootstrapping on next connect
+            // If we lost the relay connection, allow re-bootstrapping and
+            // re-reserving on the next connect.
             let is_relay = relay_addrs.iter().any(|addr| {
                 addr.iter().any(|proto| {
                     matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
@@ -255,10 +277,11 @@ fn handle_swarm_event(
             });
             if is_relay {
                 *bootstrapped = false;
+                relay_reservations.remove(&peer_id);
             }
         }
         SwarmEvent::Behaviour(event) => {
-            handle_behaviour_event(swarm, chunk_store, db, pending, event);
+            handle_behaviour_event(swarm, chunk_store, db, pending, relay_addrs, relay_reservations, event);
         }
         other => {
             debug!("Swarm event: {:?}", other);
@@ -271,6 +294,8 @@ fn handle_behaviour_event(
     chunk_store: &ChunkStore,
     db: &Database,
     pending: &mut Pending,
+    relay_addrs: &[Multiaddr],
+    relay_reservations: &mut HashSet<PeerId>,
     event: ChimeraBehaviourEvent,
 ) {
     match event {
@@ -278,7 +303,7 @@ fn handle_behaviour_event(
             handle_kademlia_event(pending, e);
         }
         ChimeraBehaviourEvent::Identify(e) => {
-            handle_identify_event(swarm, e);
+            handle_identify_event(swarm, relay_addrs, relay_reservations, e);
         }
         ChimeraBehaviourEvent::Ping(e) => {
             debug!("Ping from {}: {:?}", e.peer, e.result);
@@ -376,7 +401,12 @@ fn handle_kademlia_event(pending: &mut Pending, event: kad::Event) {
 
 // ── Identify ──
 
-fn handle_identify_event(swarm: &mut Swarm<ChimeraBehaviour>, event: identify::Event) {
+fn handle_identify_event(
+    swarm: &mut Swarm<ChimeraBehaviour>,
+    relay_addrs: &[Multiaddr],
+    relay_reservations: &mut HashSet<PeerId>,
+    event: identify::Event,
+) {
     match event {
         identify::Event::Received { peer_id, info, .. } => {
             info!("Identified peer {}: protocols={:?}", peer_id, info.protocols);
@@ -384,6 +414,34 @@ fn handle_identify_event(swarm: &mut Swarm<ChimeraBehaviour>, event: identify::E
             // Add the peer's addresses to Kademlia so we can reach them later
             for addr in &info.listen_addrs {
                 swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+            }
+
+            // If this peer is one of our bootstrap relays, ask it to host a
+            // relay reservation for us now that we know the connection is
+            // alive and the peer speaks the hop protocol. Doing this here
+            // (instead of in start_listening) is the difference between
+            // "the relay client silently drops the reservation request" and
+            // "ReservationReqAccepted appears in the logs."
+            let matching_relay = relay_addrs.iter().find(|addr| {
+                addr.iter().any(|proto| {
+                    matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
+                })
+            });
+            if let Some(relay_addr) = matching_relay {
+                if !relay_reservations.contains(&peer_id) {
+                    let circuit_listen: Multiaddr = relay_addr
+                        .clone()
+                        .with(libp2p::multiaddr::Protocol::P2pCircuit);
+                    match swarm.listen_on(circuit_listen.clone()) {
+                        Ok(_) => {
+                            info!("Requesting relay reservation via: {}", circuit_listen);
+                            relay_reservations.insert(peer_id);
+                        }
+                        Err(e) => {
+                            warn!("Failed to listen on relay circuit {}: {}", circuit_listen, e);
+                        }
+                    }
+                }
             }
         }
         identify::Event::Sent { peer_id, .. } => {

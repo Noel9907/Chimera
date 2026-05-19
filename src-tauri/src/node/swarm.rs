@@ -86,26 +86,17 @@ pub fn start_listening(
 
     info!("Listening on TCP port {}", config.tcp_port);
 
-    // Connect to bootstrap nodes (like our relay server)
+    // Connect to bootstrap nodes (like our relay server).
+    // NOTE: the relay-circuit listen_on is NOT done here — calling it before
+    // the relay connection is established silently drops the reservation
+    // request. Instead, the event loop calls listen_on after receiving the
+    // relay's Identify event (see node::event_loop::handle_identify_event).
     for addr_str in &config.bootstrap_nodes {
         match addr_str.parse::<Multiaddr>() {
             Ok(addr) => {
                 info!("Dialing bootstrap node: {}", addr);
                 if let Err(e) = swarm.dial(addr.clone()) {
                     tracing::warn!("Failed to dial {}: {}", addr, e);
-                }
-
-                // Listen through this node as a relay so peers behind NAT can reach us.
-                // This makes a "relay reservation" — the relay server will forward
-                // incoming connections to us. Without this, other peers can find our
-                // PeerId in the DHT but can't actually connect to send us requests.
-                let relay_addr: Multiaddr = format!("{}/p2p-circuit", addr)
-                    .parse()
-                    .expect("Valid relay circuit address");
-                if let Err(e) = swarm.listen_on(relay_addr.clone()) {
-                    tracing::warn!("Failed to listen on relay circuit {}: {}", relay_addr, e);
-                } else {
-                    info!("Listening via relay circuit: {}", relay_addr);
                 }
             }
             Err(e) => {

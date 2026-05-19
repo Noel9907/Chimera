@@ -46,6 +46,18 @@ pub fn run() {
             });
         })
         .setup(|app| {
+            // On Android, dirs::home_dir() returns None so the default path
+            // falls back to "./" which isn't writable. Use Tauri's app data
+            // directory on mobile only — desktop uses ~/.chimera as before.
+            #[cfg(mobile)]
+            if std::env::var("CHIMERA_DATA_DIR").is_err() {
+                if let Ok(app_dir) = app.path().app_data_dir() {
+                    let chimera_dir = app_dir.join(".chimera");
+                    std::env::set_var("CHIMERA_DATA_DIR", &chimera_dir);
+                    tracing::info!("Data directory (mobile): {}", chimera_dir.display());
+                }
+            }
+
             let config = NodeConfig::default_config();
             std::fs::create_dir_all(&config.data_dir).ok();
 
