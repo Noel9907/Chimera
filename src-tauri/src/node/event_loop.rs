@@ -429,6 +429,7 @@ fn handle_identify_event(
         identify::Event::Received { peer_id, info, .. } => {
             info!("Identified peer {}: protocols={:?}", peer_id, info.protocols);
             info!("  listen_addrs: {:?}", info.listen_addrs);
+            info!("  observed_addr: {}", info.observed_addr);
             // Add the peer's addresses to Kademlia so we can reach them later
             for addr in &info.listen_addrs {
                 swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
@@ -436,10 +437,7 @@ fn handle_identify_event(
 
             // If this peer is one of our bootstrap relays, ask it to host a
             // relay reservation for us now that we know the connection is
-            // alive and the peer speaks the hop protocol. Doing this here
-            // (instead of in start_listening) is the difference between
-            // "the relay client silently drops the reservation request" and
-            // "ReservationReqAccepted appears in the logs."
+            // alive and the peer speaks the hop protocol.
             let matching_relay = relay_addrs.iter().find(|addr| {
                 addr.iter().any(|proto| {
                     matches!(proto, libp2p::multiaddr::Protocol::P2p(id) if id == peer_id)
@@ -447,6 +445,18 @@ fn handle_identify_event(
             });
             if let Some(relay_addr) = matching_relay {
                 if !relay_reservations.contains(&peer_id) {
+                    // CRITICAL: before requesting a reservation, register the
+                    // address the relay sees us coming from as one of our
+                    // external addresses. Otherwise the reservation request
+                    // includes no addresses and the relay rejects it with
+                    // `NoAddressesInReservation` (this is what was happening
+                    // before this line existed). libp2p normally promotes
+                    // observed addresses to confirmed externals only after
+                    // multiple confirmations — for a single-relay bootstrap
+                    // we have to do it ourselves.
+                    info!("Confirming external address from observed_addr: {}", info.observed_addr);
+                    swarm.add_external_address(info.observed_addr.clone());
+
                     let circuit_listen: Multiaddr = relay_addr
                         .clone()
                         .with(libp2p::multiaddr::Protocol::P2pCircuit);
