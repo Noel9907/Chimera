@@ -219,15 +219,14 @@ fn ensure_connected(
         })
         .collect();
 
-    // Register the circuit address with every behaviour that might need to
-    // dial this peer. Each behaviour has its own address book — registering
-    // with one (e.g. Kademlia) doesn't propagate to the others. The
-    // request_response behaviours (dag_proto, chunk_proto) are the ones that
-    // actually dial when we call send_request, so they need it directly.
+    // Register the circuit address with the swarm's peer address book.
+    // This is THE canonical way to make an address dialable in libp2p 0.54:
+    // it's queried by every behaviour's dialer, including request_response
+    // (which is what actually opens the connection when we call send_request).
+    // Also keep adding to Kademlia so the DHT routing table stays accurate.
     for addr in &circuit_addrs {
+        swarm.add_peer_address(*peer_id, addr.clone());
         swarm.behaviour_mut().kademlia.add_address(peer_id, addr.clone());
-        swarm.behaviour_mut().dag_proto.add_address(peer_id, addr.clone());
-        swarm.behaviour_mut().chunk_proto.add_address(peer_id, addr.clone());
     }
 
     if swarm.is_connected(peer_id) {
