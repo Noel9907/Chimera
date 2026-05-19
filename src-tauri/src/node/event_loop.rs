@@ -219,8 +219,15 @@ fn ensure_connected(
         })
         .collect();
 
+    // Register the circuit address with every behaviour that might need to
+    // dial this peer. Each behaviour has its own address book — registering
+    // with one (e.g. Kademlia) doesn't propagate to the others. The
+    // request_response behaviours (dag_proto, chunk_proto) are the ones that
+    // actually dial when we call send_request, so they need it directly.
     for addr in &circuit_addrs {
         swarm.behaviour_mut().kademlia.add_address(peer_id, addr.clone());
+        swarm.behaviour_mut().dag_proto.add_address(peer_id, addr.clone());
+        swarm.behaviour_mut().chunk_proto.add_address(peer_id, addr.clone());
     }
 
     if swarm.is_connected(peer_id) {
@@ -252,6 +259,18 @@ fn handle_swarm_event(
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
             info!("Listening on: {}", address);
+        }
+        SwarmEvent::ListenerError { listener_id, error } => {
+            warn!("Listener {:?} errored: {}", listener_id, error);
+        }
+        SwarmEvent::ListenerClosed { listener_id, addresses, reason } => {
+            warn!("Listener {:?} closed (addresses={:?}): {:?}", listener_id, addresses, reason);
+        }
+        SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+            warn!("Outgoing connection error to {:?}: {}", peer_id, error);
+        }
+        SwarmEvent::IncomingConnectionError { local_addr, send_back_addr, error, .. } => {
+            warn!("Incoming connection error (local={}, remote={}): {}", local_addr, send_back_addr, error);
         }
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             info!("Connected to peer: {}", peer_id);
