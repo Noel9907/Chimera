@@ -42,6 +42,20 @@ struct Pending {
 
     /// DAG node requests sent to peers: RequestId → caller waiting for node info
     dag_requests: HashMap<request_response::OutboundRequestId, oneshot::Sender<Result<DagNodeInfo, String>>>,
+
+    /// Chunk/DAG requests queued while we wait for a connection to a peer.
+    /// Relay circuits take 3-4s to establish; calling send_request before the
+    /// connection is up makes request_response return DialFailure within ~1ms.
+    /// We queue here on FetchChunk/FetchDagNode and dispatch on
+    /// ConnectionEstablished for the target peer.
+    queued_requests: HashMap<PeerId, Vec<QueuedRequest>>,
+}
+
+/// A chunk or DAG request that's waiting for a peer connection to come up
+/// before it can be sent through request_response.
+enum QueuedRequest {
+    Chunk { cid: String, resp: oneshot::Sender<Result<Vec<u8>, String>> },
+    Dag { cid: String, resp: oneshot::Sender<Result<DagNodeInfo, String>> },
 }
 
 impl Pending {
@@ -51,6 +65,7 @@ impl Pending {
             dht_puts: HashMap::new(),
             chunk_requests: HashMap::new(),
             dag_requests: HashMap::new(),
+            queued_requests: HashMap::new(),
         }
     }
 }
@@ -163,15 +178,24 @@ fn handle_command(
                     return;
                 }
             };
-            // If we're not connected to this peer, dial them through the relay.
-            // Both peers are behind NAT — they can't reach each other directly.
-            // The relay forwards traffic between them.
+            // Register the relay-circuit address and dial if needed.
             ensure_connected(swarm, &pid, relay_addrs);
-            let request_id = swarm
-                .behaviour_mut()
-                .chunk_proto
-                .send_request(&pid, ChunkRequest { cid });
-            pending.chunk_requests.insert(request_id, resp);
+            // If the connection is already up, send right away. Otherwise queue
+            // and let ConnectionEstablished dispatch it once the circuit comes up.
+            if swarm.is_connected(&pid) {
+                let request_id = swarm
+                    .behaviour_mut()
+                    .chunk_proto
+                    .send_request(&pid, ChunkRequest { cid });
+                pending.chunk_requests.insert(request_id, resp);
+            } else {
+                info!("Queueing chunk request for {} (waiting for relay circuit)", pid);
+                pending
+                    .queued_requests
+                    .entry(pid)
+                    .or_default()
+                    .push(QueuedRequest::Chunk { cid, resp });
+            }
         }
 
         NodeCommand::FetchDagNode { cid, peer_id, resp } => {
@@ -183,11 +207,20 @@ fn handle_command(
                 }
             };
             ensure_connected(swarm, &pid, relay_addrs);
-            let request_id = swarm
-                .behaviour_mut()
-                .dag_proto
-                .send_request(&pid, DagRequest { cid });
-            pending.dag_requests.insert(request_id, resp);
+            if swarm.is_connected(&pid) {
+                let request_id = swarm
+                    .behaviour_mut()
+                    .dag_proto
+                    .send_request(&pid, DagRequest { cid });
+                pending.dag_requests.insert(request_id, resp);
+            } else {
+                info!("Queueing DAG request for {} (waiting for relay circuit)", pid);
+                pending
+                    .queued_requests
+                    .entry(pid)
+                    .or_default()
+                    .push(QueuedRequest::Dag { cid, resp });
+            }
         }
     }
 }
@@ -267,6 +300,26 @@ fn handle_swarm_event(
         }
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             warn!("Outgoing connection error to {:?}: {}", peer_id, error);
+            // If we queued requests for this peer and the dial truly failed
+            // (no other connection exists), surface the error to the caller
+            // instead of letting the request hang forever.
+            if let Some(pid) = peer_id {
+                if !swarm.is_connected(&pid) {
+                    if let Some(queue) = pending.queued_requests.remove(&pid) {
+                        let err_msg = format!("Failed to connect to peer: {}", error);
+                        for req in queue {
+                            match req {
+                                QueuedRequest::Chunk { resp, .. } => {
+                                    let _ = resp.send(Err(err_msg.clone()));
+                                }
+                                QueuedRequest::Dag { resp, .. } => {
+                                    let _ = resp.send(Err(err_msg.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         SwarmEvent::IncomingConnectionError { local_addr, send_back_addr, error, .. } => {
             warn!("Incoming connection error (local={}, remote={}): {}", local_addr, send_back_addr, error);
@@ -281,6 +334,32 @@ fn handle_swarm_event(
                 if let Ok(_) = swarm.behaviour_mut().kademlia.bootstrap() {
                     info!("Kademlia bootstrap triggered after connecting to {}", peer_id);
                     *bootstrapped = true;
+                }
+            }
+
+            // Dispatch any requests that were queued waiting for this connection.
+            // First request to a peer queues here while the relay circuit is
+            // being set up (~3-4s); once the connection is up we drain the queue
+            // through request_response on the now-warm circuit.
+            if let Some(queue) = pending.queued_requests.remove(&peer_id) {
+                info!("Dispatching {} queued request(s) to {}", queue.len(), peer_id);
+                for req in queue {
+                    match req {
+                        QueuedRequest::Chunk { cid, resp } => {
+                            let request_id = swarm
+                                .behaviour_mut()
+                                .chunk_proto
+                                .send_request(&peer_id, ChunkRequest { cid });
+                            pending.chunk_requests.insert(request_id, resp);
+                        }
+                        QueuedRequest::Dag { cid, resp } => {
+                            let request_id = swarm
+                                .behaviour_mut()
+                                .dag_proto
+                                .send_request(&peer_id, DagRequest { cid });
+                            pending.dag_requests.insert(request_id, resp);
+                        }
+                    }
                 }
             }
         }
@@ -445,18 +524,6 @@ fn handle_identify_event(
             });
             if let Some(relay_addr) = matching_relay {
                 if !relay_reservations.contains(&peer_id) {
-                    // CRITICAL: before requesting a reservation, register the
-                    // address the relay sees us coming from as one of our
-                    // external addresses. Otherwise the reservation request
-                    // includes no addresses and the relay rejects it with
-                    // `NoAddressesInReservation` (this is what was happening
-                    // before this line existed). libp2p normally promotes
-                    // observed addresses to confirmed externals only after
-                    // multiple confirmations — for a single-relay bootstrap
-                    // we have to do it ourselves.
-                    info!("Confirming external address from observed_addr: {}", info.observed_addr);
-                    swarm.add_external_address(info.observed_addr.clone());
-
                     let circuit_listen: Multiaddr = relay_addr
                         .clone()
                         .with(libp2p::multiaddr::Protocol::P2pCircuit);

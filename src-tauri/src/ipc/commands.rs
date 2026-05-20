@@ -34,6 +34,11 @@ fn get_data_dir() -> PathBuf {
 #[derive(Serialize)]
 pub struct PublishResult {
     pub site_name: String,
+
+
+
+
+    
     pub root_cid: String,
     pub total_size: u64,
     pub chunk_count: u32,
