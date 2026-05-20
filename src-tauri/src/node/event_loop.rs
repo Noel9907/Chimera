@@ -154,14 +154,41 @@ fn handle_command(
             };
 
             let record = kad::Record { key, value, publisher: None, expires: None };
-            match swarm.behaviour_mut().kademlia.put_record(record, kad::Quorum::One) {
-                Ok(query_id) => {
-                    pending.dht_puts.insert(query_id, resp);
-                }
-                Err(e) => {
-                    let _ = resp.send(Err(format!("DHT put failed: {:?}", e)));
-                }
+
+            // Send STORE directly to every configured relay instead of letting
+            // Kademlia pick "closest peers" by XOR distance. That picker often
+            // chose dead Chimera peers (private NAT addresses learned via
+            // Identify) whose STOREs silently failed, leaving the record only
+            // in the publisher's local store. `put_record_to` skips the closest-
+            // peer routing and targets the peers we specify — the relay always
+            // has every record, which is what viewers actually query.
+            let relay_peer_ids: Vec<PeerId> = relay_addrs
+                .iter()
+                .filter_map(|addr| {
+                    addr.iter().find_map(|p| match p {
+                        libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                        _ => None,
+                    })
+                })
+                .collect();
+
+            if relay_peer_ids.is_empty() {
+                let _ = resp.send(Err(
+                    "No relay PeerId in bootstrap_nodes; cannot announce site".to_string(),
+                ));
+                return;
             }
+
+            // Quorum::N(1) — at least one targeted relay must ACK the STORE.
+            // If the relay is unreachable, the publisher gets a real error
+            // instead of a silent local-only "success".
+            let quorum = kad::Quorum::N(std::num::NonZeroUsize::new(1).unwrap());
+            let query_id = swarm.behaviour_mut().kademlia.put_record_to(
+                record,
+                relay_peer_ids.into_iter(),
+                quorum,
+            );
+            pending.dht_puts.insert(query_id, resp);
         }
 
         NodeCommand::ResolveSiteName { site_name, resp } => {
